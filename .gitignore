@@ -1,0 +1,6 @@
+push.sh
+*.ppm
+!output/*.ppm
+*.o
+*.so
+!scenes/*.cfg

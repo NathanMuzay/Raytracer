@@ -71,7 +71,7 @@ class SceneBuilder {
 
         SceneBuilder &buildPrimitives(PrimitiveFactory &pFactory, MaterialFactory &mFactory)
         {
-            _scene.primitives = pFactory.loadPlugins("plugins/primitives", _parser.getPrimitives(), mFactory, "plugins/materials");
+            _scene.primitives = pFactory.loadPlugins("plugins/primitives", _parser.getPrimitives(), mFactory, "plugins/materials", &_scene.lights);
             return *this;
         }
 
@@ -92,7 +92,8 @@ class SceneBuilder {
                     _scene.ao.intensity = LibconfigHelper::getNumeric(ao, "intensity");
             }
 
-            _scene.lights = factory.loadPlugins("plugins/lights", _parser.getLights());
+            auto newLights = factory.loadPlugins("plugins/lights", _parser.getLights());
+            _scene.lights.insert(_scene.lights.end(), newLights.begin(), newLights.end());
             return *this;
         }
 

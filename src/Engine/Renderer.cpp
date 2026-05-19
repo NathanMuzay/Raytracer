@@ -6,6 +6,7 @@
 */
 
 #include "Renderer.hpp"
+#include "../Interfaces/EmissiveLight.hpp"
 #include <cstring>
 
 static const int MAX_DEPTH = 5;
@@ -26,29 +27,108 @@ Math::Vector3D Renderer::clamp(const Math::Vector3D &color)
     );
 }
 
-// ── isInShadow — utilise le BVH ──────────────────────────────────────────────
-bool Renderer::isInShadow(const Math::Vector3D &hitPoint, const Math::Vector3D &lightDir,
-                           double distToLight, const Scene &scene)
+// ── getShadowFactor ──────────────────────────────────────────────────────────
+// Retourne 1.0 si le point est pleinement éclairé, 0.0 si complètement dans
+// l'ombre, et une valeur intermédiaire pour les lumières de surface (soft shadows).
+// Utilise le BVH pour accélérer les requêtes d'ombre.
+double Renderer::getShadowFactor(const Math::Vector3D &hitPoint,
+                                  ILight *light,
+                                  const Scene &scene)
 {
-    Ray shadowRay(
-        Math::Point3D(
-            hitPoint.x + lightDir.x * 1e-4,
-            hitPoint.y + lightDir.y * 1e-4,
-            hitPoint.z + lightDir.z * 1e-4
-        ),
-        lightDir
+    EmissiveLight *em = dynamic_cast<EmissiveLight*>(light);
+    double radius = em ? em->getSurfaceRadius() : 0.0;
+
+    Math::Vector3D lightDir  = light->getLightDir(hitPoint);
+    double distToLight        = light->getLightDist(hitPoint);
+
+    if (radius <= 0.0) {
+        // Lumière ponctuelle — occlusion exacte via BVH
+        Ray shadowRay(
+            Math::Point3D(
+                hitPoint.x + lightDir.x * 1e-4,
+                hitPoint.y + lightDir.y * 1e-4,
+                hitPoint.z + lightDir.z * 1e-4
+            ),
+            lightDir
+        );
+        auto hit = scene.bvh.intersect(shadowRay);
+        if (!hit.primitive || hit.t >= distToLight - 1e-3 || hit.primitive->isEmissive())
+            return 1.0;
+        auto mat = hit.primitive->getMaterial();
+        if (mat && mat->getTransparency() > 0.5)
+            return 1.0;  // transparent → pas d'ombre
+        return 0.0;
+    }
+
+    // Lumière de surface (area light) — soft shadows par échantillonnage
+    int samples = (scene.antialiasingSamples > 1) ? 4 : 16;
+
+    Math::Vector3D up = (std::fabs(lightDir.x) < 0.9)
+                        ? Math::Vector3D(1, 0, 0)
+                        : Math::Vector3D(0, 1, 0);
+    Math::Vector3D tangent(
+        up.y * lightDir.z - up.z * lightDir.y,
+        up.z * lightDir.x - up.x * lightDir.z,
+        up.x * lightDir.y - up.y * lightDir.x
+    );
+    tangent = tangent.normalize();
+    Math::Vector3D bitangent(
+        lightDir.y * tangent.z - lightDir.z * tangent.y,
+        lightDir.z * tangent.x - lightDir.x * tangent.z,
+        lightDir.x * tangent.y - lightDir.y * tangent.x
+    );
+    bitangent = bitangent.normalize();
+
+    std::mt19937 rng(static_cast<uint32_t>(
+        hitPoint.x * 123 + hitPoint.y * 456 + hitPoint.z * 789));
+    std::uniform_real_distribution<double> distRand(-1.0, 1.0);
+
+    Math::Vector3D centerPos(
+        hitPoint.x + lightDir.x * distToLight,
+        hitPoint.y + lightDir.y * distToLight,
+        hitPoint.z + lightDir.z * distToLight
     );
 
-    // Parcourir les primitives via BVH mais ignorer les transparentes
-    auto hit = scene.bvh.intersect(shadowRay);
-    if (!hit.primitive || hit.t >= distToLight)
-        return false;
+    int visible = 0;
+    for (int i = 0; i < samples; i++) {
+        double u, v;
+        do {
+            u = distRand(rng);
+            v = distRand(rng);
+        } while (u * u + v * v > 1.0);
 
-    auto mat = hit.primitive->getMaterial();
-    if (mat && mat->getTransparency() > 0.5)
-        return false;  // objet transparent = ne fait pas d'ombre (ou ombre partielle)
+        Math::Vector3D samplePos(
+            centerPos.x + tangent.x * (u * radius) + bitangent.x * (v * radius),
+            centerPos.y + tangent.y * (u * radius) + bitangent.y * (v * radius),
+            centerPos.z + tangent.z * (u * radius) + bitangent.z * (v * radius)
+        );
+        Math::Vector3D dir(
+            samplePos.x - hitPoint.x,
+            samplePos.y - hitPoint.y,
+            samplePos.z - hitPoint.z
+        );
+        double sampleDist = dir.length();
+        dir = dir.normalize();
 
-    return true;
+        Ray shadowRay(
+            Math::Point3D(
+                hitPoint.x + dir.x * 1e-4,
+                hitPoint.y + dir.y * 1e-4,
+                hitPoint.z + dir.z * 1e-4
+            ),
+            dir
+        );
+        // Utilise le BVH pour accélérer les rayons d'ombre de surface
+        auto hit = scene.bvh.intersect(shadowRay);
+        if (!hit.primitive || hit.t >= sampleDist - 1e-3 || hit.primitive->isEmissive())
+            visible++;
+        else {
+            auto mat = hit.primitive->getMaterial();
+            if (mat && mat->getTransparency() > 0.5)
+                visible++;
+        }
+    }
+    return (double)visible / (double)samples;
 }
 
 // ── computeAO ────────────────────────────────────────────────────────────────
@@ -58,7 +138,6 @@ double Renderer::computeAO(const Math::Vector3D &point,
 {
     const AOSettings &ao = scene.ao;
 
-    // Build an orthonormal basis around the normal using cross()
     Math::Vector3D up = (std::fabs(normal.x) < 0.9)
                         ? Math::Vector3D(1, 0, 0)
                         : Math::Vector3D(0, 1, 0);
@@ -66,11 +145,10 @@ double Renderer::computeAO(const Math::Vector3D &point,
     Math::Vector3D tangent   = up.cross(normal).normalize();
     Math::Vector3D bitangent = normal.cross(tangent).normalize();
 
-    // Better seed: mix all three coordinates with large primes to reduce
-    // hash collisions and avoid banding artifacts on flat surfaces
-    auto hashDouble = [](double v) -> uint64_t {
+    // Seed robuste (évite les bandes sur les surfaces plates)
+    auto hashDouble = [](double val) -> uint64_t {
         uint64_t bits;
-        std::memcpy(&bits, &v, sizeof(bits));
+        std::memcpy(&bits, &val, sizeof(bits));
         bits ^= bits >> 33;
         bits *= 0xff51afd7ed558ccdULL;
         bits ^= bits >> 33;
@@ -85,7 +163,6 @@ double Renderer::computeAO(const Math::Vector3D &point,
     std::uniform_real_distribution<double> dist(0.0, 1.0);
 
     int unoccluded = 0;
-
     for (int i = 0; i < ao.samples; ++i) {
         double u1   = dist(rng);
         double u2   = dist(rng);
@@ -93,11 +170,10 @@ double Renderer::computeAO(const Math::Vector3D &point,
         double sinT = std::sqrt(u1);
         double cosT = std::sqrt(1.0 - u1);
 
-        // Cosine-weighted hemisphere sample in world space via the ONB
         Math::Vector3D dir(
-            sinT * std::cos(phi) * tangent.x + sinT * std::sin(phi) * bitangent.x + cosT * normal.x,
-            sinT * std::cos(phi) * tangent.y + sinT * std::sin(phi) * bitangent.y + cosT * normal.y,
-            sinT * std::cos(phi) * tangent.z + sinT * std::sin(phi) * bitangent.z + cosT * normal.z
+            sinT * std::cos(phi) * tangent.x   + sinT * std::sin(phi) * bitangent.x   + cosT * normal.x,
+            sinT * std::cos(phi) * tangent.y   + sinT * std::sin(phi) * bitangent.y   + cosT * normal.y,
+            sinT * std::cos(phi) * tangent.z   + sinT * std::sin(phi) * bitangent.z   + cosT * normal.z
         );
         dir = dir.normalize();
 
@@ -109,13 +185,10 @@ double Renderer::computeAO(const Math::Vector3D &point,
             ),
             dir
         );
-
-        // Use BVH for AO rays too
         auto hit = scene.bvh.intersect(aoRay);
         if (!(hit.primitive && hit.t < ao.radius))
             unoccluded++;
     }
-
     return static_cast<double>(unoccluded) / static_cast<double>(ao.samples);
 }
 
@@ -124,7 +197,6 @@ Math::Vector3D Renderer::computeColor(const Ray &ray, const Scene &scene, int de
 {
     // ── Intersection via BVH ─────────────────────────────────────────────────
     auto hit = scene.bvh.intersect(ray);
-
     if (!hit.primitive)
         return scene.backgroundColor;
 
@@ -144,6 +216,7 @@ Math::Vector3D Renderer::computeColor(const Ray &ray, const Scene &scene, int de
     Math::Vector3D baseColor = mat ? mat->getColor(hitPoint) : Math::Vector3D(255, 255, 255);
     Math::Vector3D base01(baseColor.x / 255.0, baseColor.y / 255.0, baseColor.z / 255.0);
 
+    // ── Mode rapide ───────────────────────────────────────────────────────────
     if (scene.fastMode) {
         double fakeDiffuse = std::max(0.0, normal.dot(Math::Vector3D(0.577, 0.577, 0.577)));
         return clamp(Math::Vector3D(
@@ -164,19 +237,118 @@ Math::Vector3D Renderer::computeColor(const Ray &ray, const Scene &scene, int de
         base01.z * scene.ambientLight * aoFactor
     );
 
+    // ── Primitive émissive : s'affiche à pleine luminosité ───────────────────
+    if (closest->isEmissive()) {
+        result.x = base01.x * closest->getEmissionIntensity();
+        result.y = base01.y * closest->getEmissionIntensity();
+        result.z = base01.z * closest->getEmissionIntensity();
+    }
+
     // ── Éclairage direct ─────────────────────────────────────────────────────
     for (auto &light : scene.lights) {
-        Math::Vector3D lightDir  = light->getLightDir(hitPoint);
-        double distToLight       = light->getLightDist(hitPoint);
-        if (isInShadow(hitPoint, lightDir, distToLight, scene))
-            continue;
+        EmissiveLight *em = dynamic_cast<EmissiveLight*>(light.get());
 
-        Math::Vector3D diffuse  = light->computeLight(hitPoint, normal, viewDir);
-        Math::Vector3D specular = light->computeSpecular(hitPoint, normal, viewDir);
+        if (em && em->getSurfaceRadius() > 0.0) {
+            // ── Area light : grille d'échantillons + shadow par BVH ──────────
+            double radius    = em->getSurfaceRadius();
+            int gridSteps    = (scene.antialiasingSamples > 1) ? 2 : 5;
+            int totalSamples = gridSteps * gridSteps;
 
-        result.x += base01.x * diffuse.x * scene.diffuseLight + specular.x;
-        result.y += base01.y * diffuse.y * scene.diffuseLight + specular.y;
-        result.z += base01.z * diffuse.z * scene.diffuseLight + specular.z;
+            Math::Vector3D centerPos = em->getPosition();
+            Math::Vector3D lightDir  = light->getLightDir(hitPoint);
+
+            Math::Vector3D up = (std::fabs(lightDir.x) < 0.9)
+                                ? Math::Vector3D(1, 0, 0)
+                                : Math::Vector3D(0, 1, 0);
+            Math::Vector3D tangent(
+                up.y * lightDir.z - up.z * lightDir.y,
+                up.z * lightDir.x - up.x * lightDir.z,
+                up.x * lightDir.y - up.y * lightDir.x
+            );
+            tangent = tangent.normalize();
+            Math::Vector3D bitangent(
+                lightDir.y * tangent.z - lightDir.z * tangent.y,
+                lightDir.z * tangent.x - lightDir.x * tangent.z,
+                lightDir.x * tangent.y - lightDir.y * tangent.x
+            );
+            bitangent = bitangent.normalize();
+
+            Math::Vector3D diffuseSum(0, 0, 0);
+            Math::Vector3D specularSum(0, 0, 0);
+
+            for (int gi = 0; gi < gridSteps; gi++) {
+                for (int gj = 0; gj < gridSteps; gj++) {
+                    double u = (double(gi) + 0.5) / gridSteps * 2.0 - 1.0;
+                    double v = (double(gj) + 0.5) / gridSteps * 2.0 - 1.0;
+
+                    Math::Vector3D samplePos(
+                        centerPos.x + tangent.x * (u * radius) + bitangent.x * (v * radius),
+                        centerPos.y + tangent.y * (u * radius) + bitangent.y * (v * radius),
+                        centerPos.z + tangent.z * (u * radius) + bitangent.z * (v * radius)
+                    );
+                    Math::Vector3D sampleDir(
+                        samplePos.x - hitPoint.x,
+                        samplePos.y - hitPoint.y,
+                        samplePos.z - hitPoint.z
+                    );
+                    double sampleDist = sampleDir.length();
+                    sampleDir = sampleDir.normalize();
+
+                    Ray shadowRay(
+                        Math::Point3D(
+                            hitPoint.x + normal.x * 1e-3,
+                            hitPoint.y + normal.y * 1e-3,
+                            hitPoint.z + normal.z * 1e-3
+                        ),
+                        sampleDir
+                    );
+
+                    // Test d'ombre via BVH
+                    auto sh = scene.bvh.intersect(shadowRay);
+                    bool occluded = sh.primitive && sh.t < sampleDist - 1e-3 && !sh.primitive->isEmissive();
+                    if (!occluded) {
+                        double cosAngle = std::max(0.0, normal.dot(sampleDir));
+                        Math::Vector3D diff = em->getColor() * (em->getIntensity() * cosAngle);
+
+                        Math::Vector3D spec(0, 0, 0);
+                        if (em->getPhong() > 0.0 && cosAngle > 0.0) {
+                            Math::Vector3D reflected(
+                                2.0 * cosAngle * normal.x - sampleDir.x,
+                                2.0 * cosAngle * normal.y - sampleDir.y,
+                                2.0 * cosAngle * normal.z - sampleDir.z
+                            );
+                            reflected = reflected.normalize();
+                            Math::Vector3D toCamera(viewDir.x * -1.0, viewDir.y * -1.0, viewDir.z * -1.0);
+                            double rdotv = reflected.dot(toCamera);
+                            if (rdotv > 0.0) {
+                                double s = std::pow(rdotv, em->getPhong()) * em->getIntensity();
+                                spec = Math::Vector3D(s, s, s);
+                            }
+                        }
+                        diffuseSum.x  += diff.x;  diffuseSum.y  += diff.y;  diffuseSum.z  += diff.z;
+                        specularSum.x += spec.x;  specularSum.y += spec.y;  specularSum.z += spec.z;
+                    }
+                }
+            }
+
+            diffuseSum  = diffuseSum  / (double)totalSamples;
+            specularSum = specularSum / (double)totalSamples;
+
+            result.x += base01.x * diffuseSum.x * scene.diffuseLight + specularSum.x;
+            result.y += base01.y * diffuseSum.y * scene.diffuseLight + specularSum.y;
+            result.z += base01.z * diffuseSum.z * scene.diffuseLight + specularSum.z;
+
+        } else {
+            // ── Lumière ponctuelle classique (avec BVH pour l'ombre) ─────────
+            double shadowFactor = getShadowFactor(hitPoint, light.get(), scene);
+            if (shadowFactor > 0.0) {
+                Math::Vector3D diffuse  = light->computeLight(hitPoint, normal, viewDir);
+                Math::Vector3D specular = light->computeSpecular(hitPoint, normal, viewDir);
+                result.x += (base01.x * diffuse.x * scene.diffuseLight + specular.x) * shadowFactor;
+                result.y += (base01.y * diffuse.y * scene.diffuseLight + specular.y) * shadowFactor;
+                result.z += (base01.z * diffuse.z * scene.diffuseLight + specular.z) * shadowFactor;
+            }
+        }
     }
 
     // ── Réflexion récursive ───────────────────────────────────────────────────
@@ -214,28 +386,22 @@ Math::Vector3D Renderer::computeColor(const Ray &ray, const Scene &scene, int de
     // ── Réfraction ────────────────────────────────────────────────────────────
     double transparency = mat ? mat->getTransparency() : 0.0;
     if (transparency > 0.0 && depth < MAX_DEPTH) {
-        double ior = mat ? mat->getRefractiveIndex() : 1.0;
-
-        // Détemine si on entre ou sort de l'objet
+        double ior  = mat ? mat->getRefractiveIndex() : 1.0;
         double cosI = -normal.dot(viewDir);
-        double etaI = 1.0;   // indice milieu incident (air)
-        double etaT = ior;   // indice milieu transmis
+        double etaI = 1.0, etaT = ior;
         Math::Vector3D n = normal;
 
         if (cosI < 0.0) {
-            // On sort de l'objet : inverser normale et indices
             cosI = -cosI;
             n = Math::Vector3D(-normal.x, -normal.y, -normal.z);
             std::swap(etaI, etaT);
         }
 
-        double eta = etaI / etaT;
+        double eta   = etaI / etaT;
         double sinT2 = eta * eta * (1.0 - cosI * cosI);
 
-        if (sinT2 <= 1.0) {  // pas de réflexion totale interne
+        if (sinT2 <= 1.0) {
             double cosT = std::sqrt(1.0 - sinT2);
-
-            // Direction du rayon réfracté (loi de Snell-Descartes vectorielle)
             Math::Vector3D refracted(
                 eta * viewDir.x + (eta * cosI - cosT) * n.x,
                 eta * viewDir.y + (eta * cosI - cosT) * n.y,
@@ -259,12 +425,10 @@ Math::Vector3D Renderer::computeColor(const Ray &ray, const Scene &scene, int de
                 refractedColor255.z / 255.0
             );
 
-            // Mélange : la partie transparente laisse passer la réfraction
             result.x = result.x * (1.0 - transparency) + refractedColor01.x * transparency;
             result.y = result.y * (1.0 - transparency) + refractedColor01.y * transparency;
             result.z = result.z * (1.0 - transparency) + refractedColor01.z * transparency;
         }
-        // Si réflexion totale interne : le rayon ne passe pas, on garde result tel quel
     }
 
     // ── Conversion finale + fog ───────────────────────────────────────────────
@@ -287,13 +451,14 @@ Math::Vector3D Renderer::computeColor(const Ray &ray, const Scene &scene, int de
     return finalColor;
 }
 
+// ── computePixelColor ────────────────────────────────────────────────────────
 Math::Vector3D Renderer::computePixelColor(int x, int y, const Scene &scene,
                                             std::mt19937 &rng,
                                             std::uniform_real_distribution<double> &dist)
 {
     Math::Vector3D pixelColor(0, 0, 0);
     int samplesPerSide = scene.antialiasingSamples;
-    int totalSamples = samplesPerSide * samplesPerSide;
+    int totalSamples   = samplesPerSide * samplesPerSide;
 
     for (int sy = 0; sy < samplesPerSide; sy++) {
         for (int sx = 0; sx < samplesPerSide; sx++) {
@@ -316,6 +481,7 @@ Math::Vector3D Renderer::computePixelColor(int x, int y, const Scene &scene,
     return pixelColor;
 }
 
+// ── render ───────────────────────────────────────────────────────────────────
 void Renderer::render(const Scene &scene, const std::string &output,
             std::atomic<bool> &stop,
             std::function<void(int, int, const Math::Vector3D&)> onPixel)
@@ -357,7 +523,7 @@ void Renderer::render(const Scene &scene, const std::string &output,
     for (auto &th : threads)
         th.join();
 
-    auto endRender = std::chrono::high_resolution_clock::now();
+    auto endRender  = std::chrono::high_resolution_clock::now();
     double renderMs = std::chrono::duration<double, std::milli>(endRender - startRender).count();
     auto startWrite = std::chrono::high_resolution_clock::now();
 
@@ -370,13 +536,13 @@ void Renderer::render(const Scene &scene, const std::string &output,
             write_color(file, color);
     }
 
-    auto endWrite = std::chrono::high_resolution_clock::now();
+    auto endWrite  = std::chrono::high_resolution_clock::now();
     double writeMs = std::chrono::duration<double, std::milli>(endWrite - startWrite).count();
     double totalMs = std::chrono::duration<double, std::milli>(endWrite - startTotal).count();
 
     std::cout << "[Renderer] " << nThreads << " threads | "
               << "render: " << renderMs << "ms | "
-              << "write: " << writeMs << "ms | "
-              << "total: " << totalMs << "ms"
+              << "write: "  << writeMs  << "ms | "
+              << "total: "  << totalMs  << "ms"
               << " -> " << output << std::endl;
 }

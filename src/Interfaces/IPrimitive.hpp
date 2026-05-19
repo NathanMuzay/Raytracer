@@ -34,6 +34,28 @@ class IPrimitive {
         virtual void applyRotation(const Math::Vector3D &angles) = 0;
 
         virtual std::string getDebugInfo() const = 0;
+
+        // ── Emission support ─────────────────────────────────────────────────
+        virtual bool isEmissive() const { return _isEmissive; }
+        virtual void setEmissive(bool emit, double intensity = 1.0) {
+            _isEmissive = emit;
+            _emissionIntensity = intensity;
+        }
+        virtual double getEmissionIntensity() const { return _emissionIntensity; }
+
+        // ── Color / reflectivity helpers (pour compatibilité avec ancien code) ─
+        virtual Math::Vector3D getColor(const Math::Vector3D &point) const {
+            auto mat = getMaterial();
+            return mat ? mat->getColor(point) : Math::Vector3D(255, 255, 255);
+        }
+        virtual double getReflectivity() const {
+            auto mat = getMaterial();
+            return mat ? mat->getReflectivity() : 0.0;
+        }
+
+    protected:
+        bool   _isEmissive        = false;
+        double _emissionIntensity = 1.0;
 };
 
 #endif /* !IPRIMITIVE_HPP_ */

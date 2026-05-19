@@ -5,6 +5,25 @@ Ce projet est un raytracer modulaire en C++ utilisant une architecture orientée
 
 L'application principale lit une scène décrite en fichier `.cfg` (libconfig), instancie les objets via les plugins, puis effectue le rendu dans un fichier image PPM ou en mode interactif via une fenêtre SFML.
 
+## Galerie de rendus
+
+Voici quelques exemples de scènes rendues avec le projet. Les images sont stockées dans `assets/screenshots/` pour rester versionnées avec le dépôt et s'afficher correctement sur GitHub.
+
+| Scene | Apercu |
+|-------|--------|
+| Kick off | ![Kick off](assets/screenshots/kickoff.png) |
+| Earth | ![Earth](assets/screenshots/earth.png) |
+| Demo materials | ![Demo materials](assets/screenshots/demo_mat.png) |
+| Demo reflections | ![Demo reflections](assets/screenshots/demo_reflect.png) |
+| Demo fog | ![Demo fog](assets/screenshots/demo_fog.png) |
+| Miroir | ![Miroir](assets/screenshots/miroir.png) |
+| Solar system | ![Solar system](assets/screenshots/solarsystem.png) |
+| Ambient Occlusion | ![Ambient Occlusion](assets/screenshots/AO.png) |
+| Torus | ![Torus](assets/screenshots/torus.png) |
+| Moebius | ![Moebius](assets/screenshots/moebius.png) |
+| Tanglecubes | ![Tanglecubes](assets/screenshots/tanglecubes.png) |
+| Naruto | ![Naruto](assets/screenshots/naruto.png) |
+
 ## Architecture du projet
 
 - **src/** : cœur du raytracer (parsing, moteur, rendu, interfaces)

@@ -45,6 +45,7 @@ class Renderer {
         Math::Vector3D computeColor(const Ray &ray, const Scene &scene, int depth);
         Math::Vector3D clamp(const Math::Vector3D &color);
         static bool isInShadow(const Math::Vector3D &hitPoint, const Math::Vector3D &lightDir, double distToLight, const Scene &scene);
+        double getShadowFactor(const Math::Vector3D &hitPoint, ILight *light, const Scene &scene);
         double computeAO(const Math::Vector3D &point, const Math::Vector3D &normal, const Scene &scene) const;
         Math::Vector3D computePixelColor(int x, int y, const Scene &scene, std::mt19937 &rng, std::uniform_real_distribution<double> &dist);
 };

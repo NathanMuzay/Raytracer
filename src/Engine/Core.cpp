@@ -34,8 +34,8 @@ void Core::buildScene()
     SceneBuilder builder(_configFile);
     _scene = builder
         .buildCamera()
-        .buildPrimitives(_primitiveFactory, _materialFactory)
         .buildLights(_lightFactory)
+        .buildPrimitives(_primitiveFactory, _materialFactory)
         .build();
 }
 

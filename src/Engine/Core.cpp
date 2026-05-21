@@ -93,7 +93,7 @@ void Core::stopRender()
 void Core::moveCamera(double dx, double dy, double dz)
 {
     stopRender();
-    _scene.camera.translate(dx, dy, dz);
+    _scene.camera.moveRelative(dx, dy, dz);
     std::cout << "[Core] Camera moved to ("
               << _scene.camera.origin.x << ", "
               << _scene.camera.origin.y << ", "

@@ -80,6 +80,22 @@ class Camera {
             screen.origin.y = origin.y + newCenter.y - screen.bottom_side.y * 0.5 - screen.left_side.y * 0.5;
             screen.origin.z = origin.z + newCenter.z - screen.bottom_side.z * 0.5 - screen.left_side.z * 0.5;
         }
+
+        void moveRelative(double dx, double dy, double dz)
+        {
+            Math::Vector3D right = screen.bottom_side.normalize();
+            Math::Vector3D up = screen.left_side.normalize();
+            Math::Vector3D forward = up.cross(right);
+
+            Math::Vector3D movement = right * dx + forward * dy + up * dz;
+            
+            origin.x += movement.x;
+            origin.y += movement.y;
+            origin.z += movement.z;
+            screen.origin.x += movement.x;
+            screen.origin.y += movement.y;
+            screen.origin.z += movement.z;
+        }
 };
 
 #endif /* !CAMERA_HPP_ */
